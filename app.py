@@ -10,7 +10,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 # --- [1. 설정 및 API 키] ---
 # OpenAI API 키를 입력하세요. (sk-...)
-API_KEY = "OPENAI_API_KEY"
+API_KEY = ["OPENAI_API_KEY"]
 client = OpenAI(api_key=API_KEY)
 
 
