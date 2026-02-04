@@ -9,12 +9,16 @@ import time
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 # --- [1. 설정 및 API 키] ---
-# OpenAI API 키를 입력하세요. (sk-...)
-API_KEY = ["OPENAI_API_KEY"]
-client = OpenAI(api_key=API_KEY)
+# 이미지에 설정하신 "OPENAI_API_KEY"를 정확히 불러옵니다.
+try:
+    API_KEY = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=API_KEY)
+except Exception as e:
+    st.error(f"❌ Secrets 설정 오류: 'OPENAI_API_KEY'를 찾을 수 없습니다. ({e})")
+    st.stop()
 
 
-# --- [2. PDF/Excel 읽기 함수] ---
+# --- [2. 데이터 추출 함수] ---
 def get_pdf_text_from_upload(uploaded_files):
     all_text = ""
     for uploaded_file in uploaded_files:
@@ -52,7 +56,7 @@ def highlight_tc_rows(row):
 
 # --- [4. 웹 화면 구성] ---
 st.set_page_config(page_title="QA TC Generator Pro", layout="wide")
-st.title("🚀 테스트 케이스 생성기 (OpenAI)")
+st.title("🚀 테스트 케이스 생성 및 업데이트")
 
 st.info("💡 **처음 제작**: 기획서만 업로드 / **수정 업데이트**: 이전 엑셀을 추가로 업로드")
 
@@ -61,12 +65,12 @@ with col1:
     st.subheader("📁 1. 기획서 업로드 (필수)")
     uploaded_files = st.file_uploader("기획서 PDF (여러 개 가능)", type="pdf", accept_multiple_files=True)
 with col2:
-    st.subheader("📂 2. 기존 TC 업로드 (선택)")
-    old_excel = st.file_uploader("이전에 다운받은 엑셀 파일", type="xlsx")
+    st.subheader("📂 2. 기존 TC 업로드 (선택/업데이트용)")
+    old_excel = st.file_uploader("이전에 다운받은 TC 엑셀 파일", type="xlsx")
 
 if uploaded_files:
     is_update = old_excel is not None
-    button_label = "🪄 변경 사항 분석 및 업데이트" if is_update else "🪄 테스트 케이스 신규 생성"
+    button_label = "🪄 변경 사항 분석 및 TC 업데이트" if is_update else "🪄 테스트 케이스 신규 생성"
 
     if st.button(button_label, type="primary"):
         with st.spinner("기획서 분석 및 데이터 정밀 추출 중..."):
@@ -74,7 +78,7 @@ if uploaded_files:
             plan_content = get_pdf_text_from_upload(uploaded_files)
             old_data_text = get_old_excel_data(old_excel)
 
-            # 모드별 특화 지시문
+            # [모드별 특화 지시문]
             mode_instruction = ""
             if is_update:
                 mode_instruction = f"""
@@ -89,7 +93,7 @@ if uploaded_files:
                 1. 기획서 내용을 바탕으로 화면 요구사항을 처음부터 꼼꼼하게 추출하라.
                 """
 
-            # 🚨 [사용자 요청: 기존 마스터 프롬프트 100% 보존]
+            # 🚨 [마스터 프롬프트: 기존 지침 100% 보존]
             prompt = f"""
             너는 QA 엔지니어이며 TC 작성 전문가이다.
             기획서에 작성된 UI 요소 및 Description에 따라 TC를 작성해라.
@@ -147,6 +151,7 @@ if uploaded_files:
             3. 구분자
             / 기호로 항목의 구분을 한다.
 
+
             ### [작성 예시]
             | TC ID | 프로그램명(화면명) | 화면 ID | 요구사항 ID | Label 1 | Label 2 | Label 3 | 사전 조건 / 참고 | 수행 절차 | 기대 결과 | 결과 | 수행자 | 비고 |
             |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -159,15 +164,20 @@ if uploaded_files:
             {plan_content}
             """
 
+            # --- API 호출 (OpenAI Chat API) ---
             try:
-                # OpenAI API 호출 (gpt-4o 모델 사용)
                 response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "system", "content": "You are a professional QA engineer expert."},
-                              {"role": "user", "content": prompt}]
+                    model="gpt-4o",  # 성능을 위해 gpt-4o 사용 권장
+                    messages=[
+                        {"role": "system", "content": "You are a senior QA engineer and TC design expert."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1  # 일관성을 위해 낮은 온도 설정
                 )
 
                 raw_data = response.choices[0].message.content.strip()
+
+                # 데이터 파싱 로직
                 lines = [line.strip() for line in raw_data.split('\n') if '|' in line]
                 lines = [line for line in lines if not all(c in '| -:' for c in line)]
 
@@ -191,7 +201,7 @@ if uploaded_files:
                         df['결과'] = "Not Tested";
                         df['수행자'] = ""
 
-                    # --- 엑셀 스타일링 로직 ---
+                    # --- 엑셀 스타일링 ---
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         df.to_excel(writer, index=False, sheet_name='Test Case')
@@ -221,15 +231,17 @@ if uploaded_files:
                                         cell.fill = blue
                                     elif "[삭제]" in note:
                                         cell.fill = gray
+
                                     align = 'left' if c_idx in [9, 10, 13] else 'center'
                                     cell.alignment = Alignment(horizontal=align, vertical='center', wrap_text=True)
 
-                        column_widths = [10, 15, 12, 12, 15, 18, 15, 18, 35, 35, 10, 10, 25]
-                        for i, width in enumerate(column_widths, 1):
+                        col_widths = [10, 15, 12, 12, 15, 18, 15, 20, 35, 35, 10, 10, 25]
+                        for i, width in enumerate(col_widths, 1):
                             ws.column_dimensions[chr(64 + i)].width = width
 
                     st.balloons()
-                    st.success(f"✅ 분석 완료! 총 {len(df)}개의 케이스가 생성되었습니다.")
+                    st.success(f"✅ 분석 완료! 총 {len(df)}개의 케이스가 준비되었습니다.")
+                    st.subheader("📝 추출 결과 미리보기")
                     st.dataframe(df.style.apply(highlight_tc_rows, axis=1), use_container_width=True)
 
                     st.download_button(
@@ -239,4 +251,4 @@ if uploaded_files:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             except Exception as e:
-                st.error(f"❌ OpenAI 에러: {e}")
+                st.error(f"❌ OpenAI 에러 발생: {e}")
